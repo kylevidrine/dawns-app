@@ -141,12 +141,14 @@ export default function App() {
     check();
   }, []);
 
-  // Derive an enhanced version of the captured photo using CLAHE (adaptive
-  // local contrast enhancement) on the L channel in Lab color space. CLAHE
-  // auto-adapts to whatever brightness/contrast exists in each region of
-  // the photo — unlike a fixed threshold tuned to one document, it isn't
-  // tied to any particular document type, and it keeps color/photos/logos
-  // intact instead of collapsing everything to pure black and white.
+  // Derive an enhanced version of the captured photo: divide the grayscale
+  // image by a heavily-blurred copy of itself (the blur estimates the
+  // *lighting* — crinkle-fold shadows, hand shadows, uneven light — as
+  // opposed to the page content), then CLAHE on top for local contrast.
+  // Verified against a real crinkled, shadowed receipt: this removes fold
+  // shadows almost entirely and leaves crisp, readable text. A plain color
+  // CLAHE pass alone left visible shadow residue and a color cast — this
+  // two-step process on grayscale is what actually fixed it.
   useEffect(() => {
     if (!capturedImage) {
       setEnhancedImage(null);
@@ -164,57 +166,35 @@ export default function App() {
       if (!ctx) return;
       ctx.drawImage(img, 0, 0);
 
-      let src: any, rgb: any, lab: any, channels: any,
-          lChannel: any, aChannel: any, bChannel: any,
-          lEnhanced: any, mergedChannels: any, merged: any, outRgb: any;
+      let src: any, gray: any, lighting: any, normalized: any, finalMat: any;
       try {
-        src = cv.imread(canvas); // RGBA
-        rgb = new cv.Mat();
-        cv.cvtColor(src, rgb, cv.COLOR_RGBA2RGB);
+        src = cv.imread(canvas);
+        gray = new cv.Mat();
+        cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
 
-        lab = new cv.Mat();
-        cv.cvtColor(rgb, lab, cv.COLOR_RGB2Lab);
+        lighting = new cv.Mat();
+        cv.GaussianBlur(gray, lighting, new cv.Size(0, 0), 25, 25);
 
-        channels = new cv.MatVector();
-        cv.split(lab, channels);
-        lChannel = channels.get(0);
-        aChannel = channels.get(1);
-        bChannel = channels.get(2);
+        normalized = new cv.Mat();
+        cv.divide(gray, lighting, normalized, 255);
 
         const clahe = new cv.CLAHE(2.5, new cv.Size(8, 8));
-        lEnhanced = new cv.Mat();
-        clahe.apply(lChannel, lEnhanced);
+        finalMat = new cv.Mat();
+        clahe.apply(normalized, finalMat);
         clahe.delete();
 
-        mergedChannels = new cv.MatVector();
-        mergedChannels.push_back(lEnhanced);
-        mergedChannels.push_back(aChannel);
-        mergedChannels.push_back(bChannel);
-
-        merged = new cv.Mat();
-        cv.merge(mergedChannels, merged);
-
-        outRgb = new cv.Mat();
-        cv.cvtColor(merged, outRgb, cv.COLOR_Lab2RGB);
-
         const outCanvas = document.createElement('canvas');
-        cv.imshow(outCanvas, outRgb);
+        cv.imshow(outCanvas, finalMat);
         setEnhancedImage(outCanvas.toDataURL('image/jpeg', 0.92));
       } catch (err) {
         console.error('Enhance error:', err);
         setEnhancedImage(null);
       } finally {
         src?.delete();
-        rgb?.delete();
-        lab?.delete();
-        channels?.delete();
-        lChannel?.delete();
-        aChannel?.delete();
-        bChannel?.delete();
-        lEnhanced?.delete();
-        mergedChannels?.delete();
-        merged?.delete();
-        outRgb?.delete();
+        gray?.delete();
+        lighting?.delete();
+        normalized?.delete();
+        finalMat?.delete();
       }
     };
     img.src = capturedImage;
