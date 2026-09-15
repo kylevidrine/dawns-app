@@ -334,7 +334,7 @@ export default function App() {
 
           if (cv) {
             try {
-              const PADDING = 15; // px in full-res video coords
+              const PADDING = 3; // px in full-res video coords
 
               srcMat = cv.imread(canvas);
 
