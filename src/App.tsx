@@ -14,6 +14,68 @@ function orderPoints(pts: Point[]): [Point, Point, Point, Point] {
   return [tl, tr, br, bl];
 }
 
+// Finds the largest quad-shaped contour in a cv.Mat, returning its 4 corners
+// in that mat's own pixel coordinates (or null if nothing large enough).
+function detectQuadCorners(cv: any, mat: any, minAreaFraction: number): Point[] | null {
+  let gray: any, blurred: any, edges: any, contours: any, hierarchy: any, kernel: any;
+  let result: Point[] | null = null;
+  try {
+    gray      = new cv.Mat();
+    blurred   = new cv.Mat();
+    edges     = new cv.Mat();
+    contours  = new cv.MatVector();
+    hierarchy = new cv.Mat();
+
+    cv.cvtColor(mat, gray, cv.COLOR_RGBA2GRAY);
+    cv.GaussianBlur(gray, blurred, new cv.Size(5, 5), 0);
+    cv.Canny(blurred, edges, 50, 150);
+
+    kernel = cv.Mat.ones(3, 3, cv.CV_8U);
+    cv.dilate(edges, edges, kernel);
+
+    cv.findContours(edges, contours, hierarchy, cv.RETR_LIST, cv.CHAIN_APPROX_SIMPLE);
+
+    const minArea = mat.cols * mat.rows * minAreaFraction;
+    let bestArea = 0;
+
+    for (let i = 0; i < contours.size(); i++) {
+      const cnt  = contours.get(i);
+      const area = cv.contourArea(cnt);
+
+      if (area > minArea && area > bestArea) {
+        const peri = cv.arcLength(cnt, true);
+        for (const eps of [0.02, 0.03, 0.05]) {
+          const approx = new cv.Mat();
+          cv.approxPolyDP(cnt, approx, eps * peri, true);
+          if (approx.rows === 4) {
+            const corners: Point[] = [];
+            for (let j = 0; j < 4; j++) {
+              corners.push({
+                x: approx.data32S[j * 2],
+                y: approx.data32S[j * 2 + 1],
+              });
+            }
+            result   = corners;
+            bestArea = area;
+            approx.delete();
+            break;
+          }
+          approx.delete();
+        }
+      }
+      cnt.delete();
+    }
+  } finally {
+    gray?.delete();
+    blurred?.delete();
+    edges?.delete();
+    contours?.delete();
+    hierarchy?.delete();
+    kernel?.delete();
+  }
+  return result;
+}
+
 export default function App() {
   const [view, setView] = useState<'scanner' | 'history' | 'detail'>('scanner');
   const [scans, setScans] = useState<ScanRecord[]>([]);
@@ -175,61 +237,16 @@ export default function App() {
       const ctx = overlay.getContext('2d');
       if (!ctx) { animationFrameId = requestAnimationFrame(processFrame); return; }
 
-      let src: any, gray: any, blurred: any, edges: any,
-          contours: any, hierarchy: any, kernel: any;
+      let src: any;
       try {
-        src       = cv.imread(procCanvas);
-        gray      = new cv.Mat();
-        blurred   = new cv.Mat();
-        edges     = new cv.Mat();
-        contours  = new cv.MatVector();
-        hierarchy = new cv.Mat();
+        src = cv.imread(procCanvas);
 
-        cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
-        cv.GaussianBlur(gray, blurred, new cv.Size(5, 5), 0);
-        cv.Canny(blurred, edges, 50, 150);
-
-        // Dilate slightly to close edge gaps
-        kernel = cv.Mat.ones(3, 3, cv.CV_8U);
-        cv.dilate(edges, edges, kernel);
-
-        cv.findContours(edges, contours, hierarchy, cv.RETR_LIST, cv.CHAIN_APPROX_SIMPLE);
-
-        const minArea = procCanvas.width * procCanvas.height * 0.15;
-        const scaleX  = overlay.width  / procCanvas.width;
-        const scaleY  = overlay.height / procCanvas.height;
-
-        let bestCorners: Point[] | null = null;
-        let bestArea = 0;
-
-        for (let i = 0; i < contours.size(); i++) {
-          const cnt  = contours.get(i);
-          const area = cv.contourArea(cnt);
-
-          if (area > minArea && area > bestArea) {
-            const peri = cv.arcLength(cnt, true);
-            // Try progressively looser epsilon until we get a quad
-            for (const eps of [0.02, 0.03, 0.05]) {
-              const approx = new cv.Mat();
-              cv.approxPolyDP(cnt, approx, eps * peri, true);
-              if (approx.rows === 4) {
-                const corners: Point[] = [];
-                for (let j = 0; j < 4; j++) {
-                  corners.push({
-                    x: approx.data32S[j * 2]     * scaleX,
-                    y: approx.data32S[j * 2 + 1] * scaleY,
-                  });
-                }
-                bestCorners = corners;
-                bestArea    = area;
-                approx.delete();
-                break;
-              }
-              approx.delete();
-            }
-          }
-          cnt.delete();
-        }
+        const scaleX = overlay.width  / procCanvas.width;
+        const scaleY = overlay.height / procCanvas.height;
+        const rawCorners = detectQuadCorners(cv, src, 0.15);
+        const bestCorners: Point[] | null = rawCorners
+          ? rawCorners.map(p => ({ x: p.x * scaleX, y: p.y * scaleY }))
+          : null;
 
         ctx.clearRect(0, 0, overlay.width, overlay.height);
 
@@ -273,12 +290,6 @@ export default function App() {
         console.error('OpenCV frame error:', err);
       } finally {
         src?.delete();
-        gray?.delete();
-        blurred?.delete();
-        edges?.delete();
-        contours?.delete();
-        hierarchy?.delete();
-        kernel?.delete();
       }
 
       animationFrameId = requestAnimationFrame(processFrame);
@@ -316,72 +327,86 @@ export default function App() {
         setTimeout(() => {
           let finalDataUrl = canvas.toDataURL('image/jpeg', 0.9);
 
-          // Apply perspective crop if we have corner points
+          // Apply perspective crop if we can find document corners
           const cv = (window as any).cv;
-          const corners = capturedCornersRef.current;
           const overlay = overlayCanvasRef.current;
+          let srcMat: any;
 
-          if (cv && corners && overlay && overlay.width > 0 && overlay.height > 0) {
+          if (cv) {
             try {
               const PADDING = 15; // px in full-res video coords
 
-              // Map corners from overlay display coords → full-res video coords
-              const sx = video.videoWidth  / overlay.width;
-              const sy = video.videoHeight / overlay.height;
-              const videoPts = corners.map(p => ({ x: p.x * sx, y: p.y * sy }));
+              srcMat = cv.imread(canvas);
 
-              const [tl, tr, br, bl] = orderPoints(videoPts);
+              // Detect corners directly on the full-resolution capture — more
+              // accurate than the downscaled live-preview corners, and works
+              // even when the live overlay never locked onto a stable quad
+              // (manual mode, or the shutter tapped before it stabilized).
+              let videoPts: Point[] | null = detectQuadCorners(cv, srcMat, 0.15);
 
-              // Expand each corner outward by PADDING pixels
-              const cx = (tl.x + tr.x + br.x + bl.x) / 4;
-              const cy = (tl.y + tr.y + br.y + bl.y) / 4;
-              const pad = (pt: Point): Point => {
-                const dx = pt.x - cx;
-                const dy = pt.y - cy;
-                const len = Math.hypot(dx, dy) || 1;
-                return {
-                  x: Math.max(0, Math.min(video.videoWidth  - 1, pt.x + (dx / len) * PADDING)),
-                  y: Math.max(0, Math.min(video.videoHeight - 1, pt.y + (dy / len) * PADDING)),
+              // Fall back to the cached live-preview corners (scaled up to
+              // full-res video coordinates) if fresh detection found nothing.
+              if (!videoPts && capturedCornersRef.current && overlay && overlay.width > 0 && overlay.height > 0) {
+                const sx = video.videoWidth  / overlay.width;
+                const sy = video.videoHeight / overlay.height;
+                videoPts = capturedCornersRef.current.map(p => ({ x: p.x * sx, y: p.y * sy }));
+              }
+
+              if (videoPts) {
+                const [tl, tr, br, bl] = orderPoints(videoPts);
+
+                // Expand each corner outward by PADDING pixels
+                const cx = (tl.x + tr.x + br.x + bl.x) / 4;
+                const cy = (tl.y + tr.y + br.y + bl.y) / 4;
+                const pad = (pt: Point): Point => {
+                  const dx = pt.x - cx;
+                  const dy = pt.y - cy;
+                  const len = Math.hypot(dx, dy) || 1;
+                  return {
+                    x: Math.max(0, Math.min(video.videoWidth  - 1, pt.x + (dx / len) * PADDING)),
+                    y: Math.max(0, Math.min(video.videoHeight - 1, pt.y + (dy / len) * PADDING)),
+                  };
                 };
-              };
-              const [ptl, ptr, pbr, pbl] = [pad(tl), pad(tr), pad(br), pad(bl)];
+                const [ptl, ptr, pbr, pbl] = [pad(tl), pad(tr), pad(br), pad(bl)];
 
-              const maxW = Math.round(Math.max(
-                Math.hypot(ptr.x - ptl.x, ptr.y - ptl.y),
-                Math.hypot(pbr.x - pbl.x, pbr.y - pbl.y),
-              ));
-              const maxH = Math.round(Math.max(
-                Math.hypot(pbl.x - ptl.x, pbl.y - ptl.y),
-                Math.hypot(pbr.x - ptr.x, pbr.y - ptr.y),
-              ));
+                const maxW = Math.round(Math.max(
+                  Math.hypot(ptr.x - ptl.x, ptr.y - ptl.y),
+                  Math.hypot(pbr.x - pbl.x, pbr.y - pbl.y),
+                ));
+                const maxH = Math.round(Math.max(
+                  Math.hypot(pbl.x - ptl.x, pbl.y - ptl.y),
+                  Math.hypot(pbr.x - ptr.x, pbr.y - ptr.y),
+                ));
 
-              if (maxW > 50 && maxH > 50) {
-                const srcPts = cv.matFromArray(4, 1, cv.CV_32FC2, [
-                  ptl.x, ptl.y,
-                  ptr.x, ptr.y,
-                  pbr.x, pbr.y,
-                  pbl.x, pbl.y,
-                ]);
-                const dstPts = cv.matFromArray(4, 1, cv.CV_32FC2, [
-                  0,        0,
-                  maxW - 1, 0,
-                  maxW - 1, maxH - 1,
-                  0,        maxH - 1,
-                ]);
+                if (maxW > 50 && maxH > 50) {
+                  const srcPts = cv.matFromArray(4, 1, cv.CV_32FC2, [
+                    ptl.x, ptl.y,
+                    ptr.x, ptr.y,
+                    pbr.x, pbr.y,
+                    pbl.x, pbl.y,
+                  ]);
+                  const dstPts = cv.matFromArray(4, 1, cv.CV_32FC2, [
+                    0,        0,
+                    maxW - 1, 0,
+                    maxW - 1, maxH - 1,
+                    0,        maxH - 1,
+                  ]);
 
-                const M   = cv.getPerspectiveTransform(srcPts, dstPts);
-                const src = cv.imread(canvas);
-                const dst = new cv.Mat();
-                cv.warpPerspective(src, dst, M, new cv.Size(maxW, maxH));
+                  const M   = cv.getPerspectiveTransform(srcPts, dstPts);
+                  const dst = new cv.Mat();
+                  cv.warpPerspective(srcMat, dst, M, new cv.Size(maxW, maxH));
 
-                const warpCanvas = document.createElement('canvas');
-                cv.imshow(warpCanvas, dst);
-                finalDataUrl = warpCanvas.toDataURL('image/jpeg', 0.9);
+                  const warpCanvas = document.createElement('canvas');
+                  cv.imshow(warpCanvas, dst);
+                  finalDataUrl = warpCanvas.toDataURL('image/jpeg', 0.9);
 
-                srcPts.delete(); dstPts.delete(); M.delete(); src.delete(); dst.delete();
+                  srcPts.delete(); dstPts.delete(); M.delete(); dst.delete();
+                }
               }
             } catch (err) {
               console.error('Perspective warp error:', err);
+            } finally {
+              srcMat?.delete();
             }
           }
 
