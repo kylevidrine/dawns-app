@@ -531,6 +531,9 @@ export default function App() {
 
   const saveAndSendScan = async () => {
     if (!capturedImage) return;
+    // Guard against sending the raw photo before enhancement finishes —
+    // the button is disabled for this too, but never silently downgrade.
+    if (viewMode === 'enhanced' && !enhancedImage) return;
     const outputImage = viewMode === 'enhanced' && enhancedImage ? enhancedImage : capturedImage;
 
     setIsSending(true);
@@ -753,13 +756,15 @@ export default function App() {
                   </button>
                   <button
                     onClick={saveAndSendScan}
-                    disabled={isSending}
+                    disabled={isSending || (viewMode === 'enhanced' && !enhancedImage)}
                     className="flex flex-col items-center gap-3 text-white ios-btn-active disabled:opacity-50"
                   >
                     <div className="p-5 rounded-full bg-blue-500 shadow-[0_0_20px_rgba(59,130,246,0.5)]">
-                      {isSending ? <Loader2 className="animate-spin" size={32} /> : <Check size={32} />}
+                      {isSending || (viewMode === 'enhanced' && !enhancedImage) ? <Loader2 className="animate-spin" size={32} /> : <Check size={32} />}
                     </div>
-                    <span className="text-sm font-bold">{isSending ? 'Sending...' : 'Save & Send'}</span>
+                    <span className="text-sm font-bold">
+                      {isSending ? 'Sending...' : viewMode === 'enhanced' && !enhancedImage ? 'Enhancing...' : 'Save & Send'}
+                    </span>
                   </button>
                 </div>
               </div>
