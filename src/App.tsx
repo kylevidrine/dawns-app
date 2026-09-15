@@ -117,11 +117,12 @@ export default function App() {
     check();
   }, []);
 
-  // Derive a black-and-white "document mode" version of the captured photo.
-  // Uses adaptive thresholding (local, per-region brightness normalization)
-  // rather than a flat brightness/contrast adjustment, since that's what
-  // actually removes a shadow gradient across the page without washing out
-  // or over-darkening the text — the same technique real scanner apps use.
+  // Derive an enhanced version of the captured photo using CLAHE (adaptive
+  // local contrast enhancement) on the L channel in Lab color space. CLAHE
+  // auto-adapts to whatever brightness/contrast exists in each region of
+  // the photo — unlike a fixed threshold tuned to one document, it isn't
+  // tied to any particular document type, and it keeps color/photos/logos
+  // intact instead of collapsing everything to pure black and white.
   useEffect(() => {
     if (!capturedImage) {
       setEnhancedImage(null);
@@ -139,39 +140,57 @@ export default function App() {
       if (!ctx) return;
       ctx.drawImage(img, 0, 0);
 
-      let src: any, gray: any, denoised: any, thresholded: any;
+      let src: any, rgb: any, lab: any, channels: any,
+          lChannel: any, aChannel: any, bChannel: any,
+          lEnhanced: any, mergedChannels: any, merged: any, outRgb: any;
       try {
-        src = cv.imread(canvas);
-        gray = new cv.Mat();
-        cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+        src = cv.imread(canvas); // RGBA
+        rgb = new cv.Mat();
+        cv.cvtColor(src, rgb, cv.COLOR_RGBA2RGB);
 
-        // Median blur first to kill phone-camera sensor/JPEG noise —
-        // without this, adaptiveThreshold turns that noise into heavy
-        // black speckling on thin printed lines and small text.
-        denoised = new cv.Mat();
-        cv.medianBlur(gray, denoised, 3);
+        lab = new cv.Mat();
+        cv.cvtColor(rgb, lab, cv.COLOR_RGB2Lab);
 
-        thresholded = new cv.Mat();
-        let blockSize = Math.round(img.width / 17);
-        if (blockSize % 2 === 0) blockSize += 1;
-        if (blockSize < 21) blockSize = 21;
-        cv.adaptiveThreshold(
-          denoised, thresholded, 255,
-          cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY,
-          blockSize, 6,
-        );
+        channels = new cv.MatVector();
+        cv.split(lab, channels);
+        lChannel = channels.get(0);
+        aChannel = channels.get(1);
+        bChannel = channels.get(2);
+
+        const clahe = new cv.CLAHE(2.5, new cv.Size(8, 8));
+        lEnhanced = new cv.Mat();
+        clahe.apply(lChannel, lEnhanced);
+        clahe.delete();
+
+        mergedChannels = new cv.MatVector();
+        mergedChannels.push_back(lEnhanced);
+        mergedChannels.push_back(aChannel);
+        mergedChannels.push_back(bChannel);
+
+        merged = new cv.Mat();
+        cv.merge(mergedChannels, merged);
+
+        outRgb = new cv.Mat();
+        cv.cvtColor(merged, outRgb, cv.COLOR_Lab2RGB);
 
         const outCanvas = document.createElement('canvas');
-        cv.imshow(outCanvas, thresholded);
+        cv.imshow(outCanvas, outRgb);
         setEnhancedImage(outCanvas.toDataURL('image/jpeg', 0.92));
       } catch (err) {
         console.error('Enhance error:', err);
         setEnhancedImage(null);
       } finally {
         src?.delete();
-        gray?.delete();
-        denoised?.delete();
-        thresholded?.delete();
+        rgb?.delete();
+        lab?.delete();
+        channels?.delete();
+        lChannel?.delete();
+        aChannel?.delete();
+        bChannel?.delete();
+        lEnhanced?.delete();
+        mergedChannels?.delete();
+        merged?.delete();
+        outRgb?.delete();
       }
     };
     img.src = capturedImage;
@@ -676,7 +695,7 @@ export default function App() {
                         disabled={!enhancedImage}
                         className={`px-5 py-2 rounded-full text-sm font-bold ios-btn-active disabled:opacity-40 ${viewMode === 'enhanced' ? 'bg-blue-500 text-white' : 'text-ios-gray'}`}
                       >
-                        {enhancedImage ? 'Black & White' : 'Enhancing...'}
+                        {enhancedImage ? 'Enhanced' : 'Enhancing...'}
                       </button>
                     </div>
                   </div>
