@@ -61,8 +61,9 @@ app.post("/api/scans/:id/send", async (req: Request, res: Response) => {
   }
 
   const webhookUrl = process.env.WEBHOOK_URL;
-  if (!webhookUrl) {
-    return res.status(500).json({ error: "WEBHOOK_URL is not configured on the server" });
+  const webhookSecret = process.env.WEBHOOK_SECRET;
+  if (!webhookUrl || !webhookSecret) {
+    return res.status(500).json({ error: "WEBHOOK_URL or WEBHOOK_SECRET is not configured on the server" });
   }
 
   try {
@@ -70,6 +71,8 @@ app.post("/api/scans/:id/send", async (req: Request, res: Response) => {
       image: scan.image,
       timestamp: scan.timestamp,
       scanId: scan.id,
+    }, {
+      headers: { "X-Webhook-Secret": webhookSecret },
     });
 
     scan.sent = true;
@@ -82,8 +85,8 @@ app.post("/api/scans/:id/send", async (req: Request, res: Response) => {
 });
 
 async function startServer() {
-  if (!process.env.WEBHOOK_URL) {
-    console.warn("WARNING: WEBHOOK_URL is not set. Sending scans will fail until it's configured in .env.");
+  if (!process.env.WEBHOOK_URL || !process.env.WEBHOOK_SECRET) {
+    console.warn("WARNING: WEBHOOK_URL or WEBHOOK_SECRET is not set. Sending scans will fail until both are configured in .env.");
   }
 
   if (process.env.NODE_ENV !== "production") {
