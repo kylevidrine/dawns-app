@@ -83,6 +83,8 @@ export default function App() {
   const [isFlashOn, setIsFlashOn] = useState(false);
   const [isAutoCapture, setIsAutoCapture] = useState(true);
   const [capturedImage, setCapturedImage] = useState<string | null>(null);
+  const [enhancedImage, setEnhancedImage] = useState<string | null>(null);
+  const [viewMode, setViewMode] = useState<'original' | 'enhanced'>('enhanced');
   const [isCapturing, setIsCapturing] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isSending, setIsSending] = useState(false);
@@ -114,6 +116,59 @@ export default function App() {
     };
     check();
   }, []);
+
+  // Derive a black-and-white "document mode" version of the captured photo.
+  // Uses adaptive thresholding (local, per-region brightness normalization)
+  // rather than a flat brightness/contrast adjustment, since that's what
+  // actually removes a shadow gradient across the page without washing out
+  // or over-darkening the text — the same technique real scanner apps use.
+  useEffect(() => {
+    if (!capturedImage) {
+      setEnhancedImage(null);
+      return;
+    }
+    const cv = (window as any).cv;
+    if (!cv || !cvReady) return;
+
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = img.width;
+      canvas.height = img.height;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+      ctx.drawImage(img, 0, 0);
+
+      let src: any, gray: any, thresholded: any;
+      try {
+        src = cv.imread(canvas);
+        gray = new cv.Mat();
+        cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+
+        thresholded = new cv.Mat();
+        let blockSize = Math.round(img.width / 25);
+        if (blockSize % 2 === 0) blockSize += 1;
+        if (blockSize < 15) blockSize = 15;
+        cv.adaptiveThreshold(
+          gray, thresholded, 255,
+          cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY,
+          blockSize, 15,
+        );
+
+        const outCanvas = document.createElement('canvas');
+        cv.imshow(outCanvas, thresholded);
+        setEnhancedImage(outCanvas.toDataURL('image/jpeg', 0.92));
+      } catch (err) {
+        console.error('Enhance error:', err);
+        setEnhancedImage(null);
+      } finally {
+        src?.delete();
+        gray?.delete();
+        thresholded?.delete();
+      }
+    };
+    img.src = capturedImage;
+  }, [capturedImage, cvReady]);
 
   // Fetch scan history
   useEffect(() => {
@@ -426,13 +481,14 @@ export default function App() {
 
   const saveAndSendScan = async () => {
     if (!capturedImage) return;
+    const outputImage = viewMode === 'enhanced' && enhancedImage ? enhancedImage : capturedImage;
 
     setIsSending(true);
     try {
       const saveResponse = await fetch('/api/scans', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ image: capturedImage }),
+        body: JSON.stringify({ image: outputImage }),
       });
 
       if (!saveResponse.ok) {
@@ -599,8 +655,31 @@ export default function App() {
                     <h2 className="text-xl font-bold">Is it readable?</h2>
                     <p className="text-sm text-ios-gray mt-1 px-8">Make sure the page is clean and all text is clearly readable before sending.</p>
                   </div>
+
+                  <div className="flex justify-center mb-4">
+                    <div className="inline-flex rounded-full bg-white/10 p-1">
+                      <button
+                        onClick={() => setViewMode('original')}
+                        className={`px-5 py-2 rounded-full text-sm font-bold ios-btn-active ${viewMode === 'original' ? 'bg-blue-500 text-white' : 'text-ios-gray'}`}
+                      >
+                        Original
+                      </button>
+                      <button
+                        onClick={() => setViewMode('enhanced')}
+                        disabled={!enhancedImage}
+                        className={`px-5 py-2 rounded-full text-sm font-bold ios-btn-active disabled:opacity-40 ${viewMode === 'enhanced' ? 'bg-blue-500 text-white' : 'text-ios-gray'}`}
+                      >
+                        {enhancedImage ? 'Black & White' : 'Enhancing...'}
+                      </button>
+                    </div>
+                  </div>
+
                   <div className="flex-1 min-h-0">
-                    <img src={capturedImage} className="w-full h-full object-contain rounded-2xl shadow-2xl" alt="Captured" />
+                    <img
+                      src={viewMode === 'enhanced' && enhancedImage ? enhancedImage : capturedImage!}
+                      className="w-full h-full object-contain rounded-2xl shadow-2xl"
+                      alt="Captured"
+                    />
                   </div>
                 </div>
                 <div className="flex-shrink-0 px-10 py-6 glass flex justify-around items-center">
@@ -614,7 +693,7 @@ export default function App() {
                     <span className="text-sm font-bold">Retake</span>
                   </button>
                   <button
-                    onClick={() => downloadImage(capturedImage)}
+                    onClick={() => downloadImage(viewMode === 'enhanced' && enhancedImage ? enhancedImage : capturedImage!)}
                     className="flex flex-col items-center gap-3 text-white ios-btn-active"
                   >
                     <div className="p-5 rounded-full bg-white/20 backdrop-blur-xl border border-white/10 shadow-xl">
