@@ -139,20 +139,26 @@ export default function App() {
       if (!ctx) return;
       ctx.drawImage(img, 0, 0);
 
-      let src: any, gray: any, thresholded: any;
+      let src: any, gray: any, denoised: any, thresholded: any;
       try {
         src = cv.imread(canvas);
         gray = new cv.Mat();
         cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
 
+        // Median blur first to kill phone-camera sensor/JPEG noise —
+        // without this, adaptiveThreshold turns that noise into heavy
+        // black speckling on thin printed lines and small text.
+        denoised = new cv.Mat();
+        cv.medianBlur(gray, denoised, 3);
+
         thresholded = new cv.Mat();
-        let blockSize = Math.round(img.width / 25);
+        let blockSize = Math.round(img.width / 17);
         if (blockSize % 2 === 0) blockSize += 1;
-        if (blockSize < 15) blockSize = 15;
+        if (blockSize < 21) blockSize = 21;
         cv.adaptiveThreshold(
-          gray, thresholded, 255,
+          denoised, thresholded, 255,
           cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY,
-          blockSize, 15,
+          blockSize, 6,
         );
 
         const outCanvas = document.createElement('canvas');
@@ -164,6 +170,7 @@ export default function App() {
       } finally {
         src?.delete();
         gray?.delete();
+        denoised?.delete();
         thresholded?.delete();
       }
     };
