@@ -12,7 +12,12 @@ const app = express();
 const PORT = 3350;
 
 let scans: any[] = [];
-const SCANS_FILE = path.join(process.cwd(), "scans.json");
+const DATA_DIR = path.join(process.cwd(), "data");
+const SCANS_FILE = path.join(DATA_DIR, "scans.json");
+
+if (!fs.existsSync(DATA_DIR)) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+}
 
 if (fs.existsSync(SCANS_FILE)) {
   try {
