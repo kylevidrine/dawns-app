@@ -37,33 +37,57 @@ function detectQuadCorners(cv: any, mat: any, minAreaFraction: number): Point[] 
 
     const minArea = mat.cols * mat.rows * minAreaFraction;
     let bestArea = 0;
+    let largestArea = 0;
+    let largestRect: { x: number; y: number; width: number; height: number } | null = null;
 
     for (let i = 0; i < contours.size(); i++) {
       const cnt  = contours.get(i);
       const area = cv.contourArea(cnt);
 
-      if (area > minArea && area > bestArea) {
-        const peri = cv.arcLength(cnt, true);
-        for (const eps of [0.02, 0.03, 0.05]) {
-          const approx = new cv.Mat();
-          cv.approxPolyDP(cnt, approx, eps * peri, true);
-          if (approx.rows === 4) {
-            const corners: Point[] = [];
-            for (let j = 0; j < 4; j++) {
-              corners.push({
-                x: approx.data32S[j * 2],
-                y: approx.data32S[j * 2 + 1],
-              });
+      if (area > minArea) {
+        // Track the single largest contour regardless of shape, as a
+        // fallback for when no clean 4-point polygon can be fit — real
+        // paper isn't always perfectly flat/rectangular (curled corners,
+        // shadows, texture noise all break a straight-edge assumption).
+        if (area > largestArea) {
+          largestArea = area;
+          const rect = cv.boundingRect(cnt);
+          largestRect = { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+        }
+
+        if (area > bestArea) {
+          const peri = cv.arcLength(cnt, true);
+          for (const eps of [0.02, 0.03, 0.05]) {
+            const approx = new cv.Mat();
+            cv.approxPolyDP(cnt, approx, eps * peri, true);
+            if (approx.rows === 4) {
+              const corners: Point[] = [];
+              for (let j = 0; j < 4; j++) {
+                corners.push({
+                  x: approx.data32S[j * 2],
+                  y: approx.data32S[j * 2 + 1],
+                });
+              }
+              result   = corners;
+              bestArea = area;
+              approx.delete();
+              break;
             }
-            result   = corners;
-            bestArea = area;
             approx.delete();
-            break;
           }
-          approx.delete();
         }
       }
       cnt.delete();
+    }
+
+    if (!result && largestRect) {
+      const { x, y, width, height } = largestRect;
+      result = [
+        { x,         y },
+        { x: x + width, y },
+        { x: x + width, y: y + height },
+        { x,         y: y + height },
+      ];
     }
   } finally {
     gray?.delete();
