@@ -1,6 +1,6 @@
 {
-  "name": "Document Scanner",
-  "short_name": "Scanner",
+  "name": "Dawn's App",
+  "short_name": "Dawn's App",
   "description": "Scan a document, detect its edges, and send it in",
   "start_url": "/",
   "display": "standalone",
